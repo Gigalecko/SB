@@ -1,15 +1,3 @@
-<script type="module">
-  import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-
-  const supabase = createClient(
-    'https://ezzxmkjiutvkeskvfuxr.supabase.co',
-    'sb_publishable_cXD57fdoGR_Yo5B0rBpTKg_KCA77zd5'
-  )
-
-  // Gör den global så resten av appen kan använda den
-  window.supabase = supabase
-</script>
-
 import React, { useState, useMemo, useRef, useEffect, useCallback, createContext, useContext } from "react";
 import {
   Search, Plus, X, Check, ChevronDown, ChevronRight, ChevronLeft, Trash2, Copy,
