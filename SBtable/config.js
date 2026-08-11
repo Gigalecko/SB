@@ -12,8 +12,8 @@
    service_role-nyckeln här; den ger full åtkomst till allt.
 ------------------------------------------------------------------- */
 
-export const SUPABASE_URL = "";
-export const SUPABASE_ANON_KEY = "";
+export const SUPABASE_URL = "https://ezzxmkjiutvkeskvfuxr.supabase.co/rest/v1/";
+export const SUPABASE_ANON_KEY = "sb_publishable_cXD57fdoGR_Yo5B0rBpTKg_KCA77zd5";
 
 /* Vilken arbetsyta filen pekar på. Byt bara om ni vill köra flera
    separata bestånd i samma Supabase-projekt. */
