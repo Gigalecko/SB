@@ -3,19 +3,73 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Simple Buildings</title>
+  <title>Simple Buildings – Digital tvilling</title>
+  <meta name="color-scheme" content="light" />
 
-  <!-- React -->
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #fff; }
+    #root { height: 100%; }
+    #boot {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #67727a;
+    }
+    #fatal {
+      position: fixed; inset: 0; display: none; padding: 40px; overflow: auto; background: #fff;
+      font: 13px ui-monospace, Menlo, Consolas, monospace; color: #b02318; white-space: pre-wrap;
+    }
+    #fatal h2 { font: 600 16px -apple-system, "Segoe UI", sans-serif; color: #14201f; margin: 0 0 8px; }
+    #fatal p  { font: 13px/1.6 -apple-system, "Segoe UI", sans-serif; color: #4a5459; max-width: 620px; }
+  </style>
 
-  <!-- Babel så webbläsaren kan läsa JSX -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!--
+    Importmap: talar om var webbläsaren hittar biblioteken.
+    Inget behöver installeras – de hämtas färdigbyggda från esm.sh.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+      "react-dom": "https://esm.sh/react-dom@18.3.1?external=react",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?external=react",
+      "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react",
+      "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.45.4"
+    }
+  }
+  </script>
+
+  <!-- Babel översätter JSX direkt i webbläsaren, så inget byggsteg behövs. -->
+  <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root"><div id="boot">Startar Simple Buildings…</div></div>
 
-  <!-- Din app -->
-  <script type="text/babel" data-type="module" src="./app.jsx"></script>
+  <div id="fatal">
+    <h2>Appen kunde inte starta</h2>
+    <p>Felmeddelandet står nedanför. Vanligaste orsakerna: sidan öppnades som en lokal fil
+       i stället för via en webbadress, eller så blockerar nätverket esm.sh / unpkg.com.</p>
+    <pre id="fatal-msg"></pre>
+  </div>
+
+  <script>
+    // Visar fel på skärmen, så du slipper leta i utvecklarkonsolen.
+    (function () {
+      var box = document.getElementById("fatal"), msg = document.getElementById("fatal-msg");
+      function show(text) { msg.textContent += text + "\n\n"; box.style.display = "block"; }
+      window.addEventListener("error", function (e) { show(e.message + (e.filename ? "\n" + e.filename + ":" + e.lineno : "")); });
+      window.addEventListener("unhandledrejection", function (e) { show(String(e.reason && e.reason.stack || e.reason)); });
+      if (location.protocol === "file:") {
+        show("Sidan är öppnad direkt från hårddisken (file://). JSX-filen kan inte hämtas då. Öppna den publicerade adressen på GitHub Pages i stället.");
+      }
+      setTimeout(function () {
+        if (document.getElementById("boot")) {
+          show("Inget renderades inom 15 sekunder. Kontrollera att app.jsx, db.js och config.js ligger i samma mapp som index.html.");
+        }
+      }, 15000);
+    })();
+  </script>
+
+  <!-- Appen. data-type="module" gör att import-raderna i app.jsx fungerar. -->
+  <script type="text/babel" data-type="module" data-presets="react" src="./app.jsx"></script>
 </body>
 </html>

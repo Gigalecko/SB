@@ -7,6 +7,8 @@ import {
   ArrowUp, ArrowDown, Phone, MessageSquare, Settings, Clock, Globe, Calculator,
   Sigma, Building2, Ruler, Cpu, Activity, Save, CloudOff, Gauge,
 } from "lucide-react";
+import { createRoot } from "react-dom/client";
+import * as store from "./db.js";
 
 /* ================================================================== */
 /*  Simple Buildings – Digital tvilling                                */
@@ -219,26 +221,6 @@ function getFormula(src) {
 /* ------------------------------------------------------------------ */
 /*  Värden: beräknade fält, länkar, formatering                        */
 /* ------------------------------------------------------------------ */
-async function loadBuildings() {
-  const { data, error } = await window.supabase
-    .from('buildings')
-    .select('*')
-
-  if (error) {
-    console.error(error)
-    return []
-  }
-
-  return data
-}
-
-async function saveBuilding(building) {
-  const { error } = await window.supabase
-    .from('buildings')
-    .upsert(building)
-
-  if (error) console.error(error)
-}
 
 const nf = new Intl.NumberFormat("sv-SE");
 const cf = new Intl.NumberFormat("sv-SE", { style: "currency", currency: "SEK", maximumFractionDigits: 0 });
@@ -856,7 +838,8 @@ function InlineEditor({ field, value, rect, onCommit, onCancel, onAddOption, onC
 /*  App                                                                */
 /* ================================================================== */
 
-export default function SimpleBuildingsTwin() {
+function SimpleBuildingsTwin({ session }) {
+  const userName = session?.user?.email ? session.user.email.split("@")[0].replace(/[._-]+/g, " ") : "Demo";
   const [base, setBase] = useState(seed);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState("saved");
@@ -871,19 +854,28 @@ export default function SimpleBuildingsTwin() {
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [collapsed, setCollapsed] = useState([]);
+  const [loadError, setLoadError] = useState(null);
+  const [liveNote, setLiveNote] = useState(0);
   const gridRef = useRef(null);
 
-  /* ---- Sparning ---- */
+  /* ---- Sparning mot Supabase ---- */
+  // Sätts när en ändring kommer utifrån, så vi inte skickar tillbaka den direkt.
+  const fromRemote = useRef(false);
+
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const r = await window.storage.get(STORAGE_KEY);
-        if (alive && r?.value) {
-          const parsed = JSON.parse(r.value);
-          if (parsed?.tables?.length) { setBase(parsed); setTableId(parsed.tables[0].id); }
+        const remote = await store.loadBase();
+        if (alive && remote?.tables?.length) {
+          fromRemote.current = true;
+          setBase(remote);
+          setTableId(remote.tables[0].id);
         }
-      } catch (e) { /* ingen sparad data ännu – kör demodata */ }
+      } catch (e) {
+        console.error(e);
+        if (alive) { setLoadError(e.message); setSaveState("error"); }
+      }
       if (alive) setLoaded(true);
     })();
     return () => { alive = false; };
@@ -891,13 +883,24 @@ export default function SimpleBuildingsTwin() {
 
   useEffect(() => {
     if (!loaded) return;
+    if (fromRemote.current) { fromRemote.current = false; setSaveState("saved"); return; }
     setSaveState("saving");
     const t = setTimeout(async () => {
-      try { await window.storage.set(STORAGE_KEY, JSON.stringify(base)); setSaveState("saved"); }
-      catch (e) { setSaveState("error"); }
-    }, 600);
+      try { await store.saveBase(base); setSaveState("saved"); }
+      catch (e) { console.error(e); setSaveState("error"); }
+    }, 800);
     return () => clearTimeout(t);
   }, [base, loaded]);
+
+  // Någon annan sparade – hämta in deras version.
+  useEffect(() => {
+    if (!loaded) return;
+    return store.subscribe((remote) => {
+      fromRemote.current = true;
+      setBase(remote);
+      setLiveNote(Date.now());
+    });
+  }, [loaded]);
 
   const table = base.tables.find((t) => t.id === tableId) || base.tables[0];
   const viewId = viewByTable[table.id] || table.views[0].id;
@@ -1194,7 +1197,7 @@ export default function SimpleBuildingsTwin() {
   const closeMenu = () => setMenu(null);
 
   const resetDemo = async () => {
-    try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
+    try { await store.clearBase(); } catch (e) { console.error(e); }
     const s = seed();
     setBase(s); setTableId(s.tables[0].id); setViewByTable({}); setSelected(null); setCheckedRows([]); closeMenu();
   };
@@ -1272,14 +1275,19 @@ export default function SimpleBuildingsTwin() {
             </nav>
           </div>
           <div className="sb-topbar-right">
-            <span className={"sb-save " + saveState}>
+            {store.MODE === "local" && <span className="sb-save local" title="Fyll i config.js för att spara till Supabase">Endast lokalt</span>}
+            <span className={"sb-save " + saveState} title={loadError || ""}>
               {saveState === "error" ? <CloudOff size={14} /> : <Save size={14} />}
               {saveState === "saving" ? "Sparar…" : saveState === "error" ? "Kunde inte spara" : "Sparad"}
             </span>
             <button className="sb-ghost"><HelpCircle size={15} /></button>
             <button className="sb-ghost"><Bell size={15} /></button>
             <button className="sb-share"><Share2 size={13} /> Dela</button>
-            <Avatar name="Anna Lind" size={26} />
+            {store.CONFIGURED ? (
+              <button className="sb-userbtn" title={session?.user?.email + " – klicka för att logga ut"} onClick={() => store.signOut()}>
+                <Avatar name={userName} size={26} />
+              </button>
+            ) : <Avatar name={userName} size={26} />}
           </div>
         </header>
 
@@ -1634,6 +1642,8 @@ export default function SimpleBuildingsTwin() {
             )}
           </Popover>
         )}
+
+        {liveNote > 0 && <LiveNote key={liveNote} onDone={() => setLiveNote(0)} />}
 
         {expanded && (
           <RecordModal table={table} fields={fields} rows={rows} recordId={expanded} gv={gv}
@@ -2345,10 +2355,94 @@ const CSS = `
 .sb-comment-box textarea { width: 100%; min-height: 62px; padding: 8px; border: 1px solid var(--b2); border-radius: 6px; outline: none; resize: vertical; margin-bottom: 8px; }
 .sb-comment-box textarea:focus { border-color: var(--acc); }
 
+.sb-avatar { text-transform: uppercase; }
+.sb-userbtn { display: flex; align-items: center; padding: 0; border-radius: 50%; }
+.sb-userbtn:hover { box-shadow: 0 0 0 2px var(--acc-l); }
+.sb-save.local { background: #fff5dc; color: #9a6b06; font-weight: 600; }
+
+.sb-livenote {
+  position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 95;
+  display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 24px;
+  background: var(--ink); color: #dff3f0; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0,0,0,.28);
+}
+
+.sb-login { display: flex; align-items: center; justify-content: center; background: #f5f8f8;
+  background-image: linear-gradient(rgba(15,141,132,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(15,141,132,.06) 1px, transparent 1px);
+  background-size: 24px 24px; }
+.sb-loginbox { width: 340px; background: #fff; border-radius: 12px; padding: 30px 28px 28px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.06), 0 12px 40px rgba(12,26,25,.14); }
+.sb-logingroup { margin-top: 14px; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--acc); }
+.sb-loginbox h1 { margin: 2px 0 6px; font-size: 22px; font-weight: 675; }
+.sb-loginbox p { margin: 0 0 18px; color: var(--muted); line-height: 1.5; }
+.sb-loginbox .sb-input { margin-bottom: 10px; }
+.sb-loginbtn { width: 100%; margin-top: 6px; padding: 10px; }
+
 @media (max-width: 980px) {
   .sb-nav, .sb-sidebar, .sb-modal-comments { display: none; }
 }
 `;
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<SimpleBuildingsTwin />);
+/* ------------------------------------------------------------------ */
+/*  Notis, inloggning och montering                                    */
+/* ------------------------------------------------------------------ */
+
+function LiveNote({ onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 4000); return () => clearTimeout(t); }, [onDone]);
+  return <div className="sb-livenote"><Gauge size={14} /> En kollega uppdaterade tvillingen – vyn är påfylld.</div>;
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const doLogin = async () => {
+    if (!email || !password) { setErr("Fyll i både e-post och lösenord."); return; }
+    setBusy(true); setErr(null);
+    try { await store.signIn(email, password); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  };
+
+  return (
+    <div className="sb sb-login">
+      <style>{CSS}</style>
+      <div className="sb-loginbox">
+        <Logo size={44} />
+        <div className="sb-logingroup">Simple Buildings</div>
+        <h1>Digital tvilling</h1>
+        <p>Logga in med kontot du fått av din administratör.</p>
+        <input className="sb-input" type="email" autoComplete="username" placeholder="E-post"
+          value={email} onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} />
+        <input className="sb-input" type="password" autoComplete="current-password" placeholder="Lösenord"
+          value={password} onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} />
+        {err && <div className="sb-err">{err}</div>}
+        <button className="sb-btn primary sb-loginbtn" disabled={busy} onClick={doLogin}>
+          {busy ? "Loggar in…" : "Logga in"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Root() {
+  // undefined = vi vet ännu inte, null = utloggad
+  const [session, setSession] = useState(store.CONFIGURED ? undefined : null);
+
+  useEffect(() => {
+    if (!store.CONFIGURED) return;
+    store.getSession().then(setSession).catch(() => setSession(null));
+    return store.onAuthChange(setSession);
+  }, []);
+
+  if (store.CONFIGURED && session === undefined)
+    return <div className="sb"><style>{CSS}</style><div className="sb-boot"><Logo size={40} /><div>Kontrollerar inloggning…</div></div></div>;
+
+  if (store.CONFIGURED && !session) return <LoginScreen />;
+
+  return <SimpleBuildingsTwin session={session} />;
+}
+
+createRoot(document.getElementById("root")).render(<Root />);
