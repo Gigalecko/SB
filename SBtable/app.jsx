@@ -6,9 +6,11 @@ import {
   CheckSquare, DollarSign, Table, LayoutGrid, Image, List, Layers, Palette,
   ArrowUp, ArrowDown, Phone, MessageSquare, Settings, Clock, Globe, Calculator,
   Sigma, Building2, Ruler, Cpu, Activity, Save, CloudOff, Gauge,
+  Database, Download, Upload, FileSpreadsheet, TriangleAlert,
 } from "lucide-react";
 import { createRoot } from "react-dom/client";
 import * as store from "./db.js";
+import * as io from "./io.js";
 
 /* ================================================================== */
 /*  Simple Buildings – Digital tvilling                                */
@@ -856,6 +858,8 @@ function SimpleBuildingsTwin({ session }) {
   const [collapsed, setCollapsed] = useState([]);
   const [loadError, setLoadError] = useState(null);
   const [liveNote, setLiveNote] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(null);
   const gridRef = useRef(null);
 
   /* ---- Sparning mot Supabase ---- */
@@ -1196,6 +1200,76 @@ function SimpleBuildingsTwin({ session }) {
   };
   const closeMenu = () => setMenu(null);
 
+  /* ---- Export ---- */
+  const doExport = async (kind) => {
+    setExportBusy(kind); closeMenu();
+    try {
+      const name = fileSafe(table.name);
+      if (kind === "viewCsv")
+        io.downloadCSV(`${name}-${fileSafe(view.name)}-${stamp()}.csv`, sheetFromRecords(table, visibleFields, rows, ctx));
+      else if (kind === "viewXlsx")
+        await io.downloadXLSX(`${name}-${fileSafe(view.name)}-${stamp()}.xlsx`, [{ name: view.name, rows: sheetFromRecords(table, visibleFields, rows, ctx) }]);
+      else if (kind === "tableXlsx")
+        await io.downloadXLSX(`${name}-${stamp()}.xlsx`, [{ name: table.name, rows: sheetFromRecords(table, fields, table.records, ctx) }]);
+      else if (kind === "baseXlsx")
+        await io.downloadXLSX(`${fileSafe(base.name)}-${stamp()}.xlsx`,
+          base.tables.map((t) => ({ name: t.name, rows: sheetFromRecords(t, t.fields, t.records, ctx) })));
+      else if (kind === "template")
+        io.downloadCSV(`mall-${name}.csv`, [fields.filter((f) => !isComputed(f)).map((f) => f.name)]);
+    } catch (e) {
+      console.error(e);
+      alert(e.message || "Exporten misslyckades.");
+    }
+    setExportBusy(null);
+  };
+
+  /* ---- Import ---- */
+  // Lankfalt har en spegelbild i den andra tabellen. Efter importen
+  // byggs spegelsidan om fran grunden, sa att bada haller ihop.
+  const rebuildSymmetric = (tables, tableId, linkFieldIds) => {
+    let out = tables;
+    const t = out.find((x) => x.id === tableId);
+    linkFieldIds.forEach((fid) => {
+      const f = t.fields.find((x) => x.id === fid);
+      if (!f || !f.symmetricFieldId || !f.linkedTableId) return;
+      const src = out.find((x) => x.id === tableId);
+      out = out.map((u) => u.id !== f.linkedTableId ? u : ({
+        ...u,
+        records: u.records.map((rec) => ({
+          ...rec,
+          cells: { ...rec.cells, [f.symmetricFieldId]: src.records.filter((r) => (r.cells[fid] || []).includes(rec.id)).map((r) => r.id) },
+        })),
+      }));
+    });
+    return out;
+  };
+
+  const applyImport = (plan) => {
+    setBase((b) => {
+      let tables = b.tables.map((t) => {
+        if (t.id !== table.id) return t;
+        let flds = [...t.fields, ...plan.newFields];
+        flds = flds.map((f) => plan.optionAdds[f.id]
+          ? { ...f, options: [...(f.options || []), ...plan.optionAdds[f.id]] } : f);
+
+        let recs;
+        if (plan.mode === "replace") {
+          recs = plan.records.map((r) => ({ id: r.id, comments: [], cells: r.cells }));
+        } else {
+          const patch = new Map(plan.records.filter((r) => !r.isNew).map((r) => [r.id, r.cells]));
+          recs = t.records.map((r) => patch.has(r.id) ? { ...r, cells: { ...r.cells, ...patch.get(r.id) } } : r);
+          recs = [...recs, ...plan.records.filter((r) => r.isNew).map((r) => ({ id: r.id, comments: [], cells: r.cells }))];
+        }
+        return { ...t, fields: flds, records: recs };
+      });
+      if (plan.touchedLinkFields.length) tables = rebuildSymmetric(tables, table.id, plan.touchedLinkFields);
+      return { ...b, tables };
+    });
+    setImportOpen(false);
+    setSelected(null);
+    setCheckedRows([]);
+  };
+
   const resetDemo = async () => {
     try { await store.clearBase(); } catch (e) { console.error(e); }
     const s = seed();
@@ -1344,6 +1418,8 @@ function SimpleBuildingsTwin({ session }) {
           </button>
           <button className={"sb-tool" + (view.colorFieldId ? " active-pink" : "")} onClick={(e) => openMenu("color", e)}><Palette size={14} /> Färg</button>
           <button className="sb-tool icon" onClick={(e) => openMenu("rowheight", e)}><AlignJustify size={15} /></button>
+          <span className="sb-tool-sep" />
+          <button className="sb-tool" onClick={(e) => openMenu("data", e)}><Database size={14} /> Data</button>
           <div className="sb-toolbar-spacer" />
           {checkedRows.length > 0 && (
             <button className="sb-tool danger" onClick={() => deleteRecords(checkedRows)}><Trash2 size={14} /> Ta bort {checkedRows.length} poster</button>
@@ -1525,6 +1601,30 @@ function SimpleBuildingsTwin({ session }) {
           </Popover>
         )}
 
+        {menu?.name === "data" && (
+          <Popover rect={menu.rect} onClose={closeMenu} width={310}>
+            <div className="sb-pop-title">Exportera</div>
+            <div className="sb-pop-list">
+              <div className="sb-pop-item" onClick={() => doExport("viewCsv")}>
+                <Download size={13} className="sb-pop-icon" /> Vyn som CSV<span className="sb-pop-hint">{rows.length} rader</span></div>
+              <div className="sb-pop-item" onClick={() => doExport("viewXlsx")}>
+                <FileSpreadsheet size={13} className="sb-pop-icon" /> Vyn som Excel</div>
+              <div className="sb-pop-item" onClick={() => doExport("tableXlsx")}>
+                <FileSpreadsheet size={13} className="sb-pop-icon" /> Hela tabellen som Excel<span className="sb-pop-hint">{table.records.length} rader</span></div>
+              <div className="sb-pop-item" onClick={() => doExport("baseXlsx")}>
+                <FileSpreadsheet size={13} className="sb-pop-icon" /> Alla tabeller som Excel</div>
+              <div className="sb-pop-item" onClick={() => doExport("template")}>
+                <Download size={13} className="sb-pop-icon" /> Ladda ner tom mall</div>
+            </div>
+            <div className="sb-pop-title">Importera</div>
+            <div className="sb-pop-list">
+              <div className="sb-pop-item" onClick={() => { setImportOpen(true); closeMenu(); }}>
+                <Upload size={13} className="sb-pop-icon" /> Las in CSV eller Excel...</div>
+            </div>
+            <div className="sb-pop-hintrow">Vyn tar med filter, sortering och synliga falt. Beraknade falt foljer med vid export men kan inte importeras.</div>
+          </Popover>
+        )}
+
         {menu?.name === "hide" && (
           <Popover rect={menu.rect} onClose={closeMenu} width={300}>
             <div className="sb-pop-list scroll">
@@ -1641,6 +1741,11 @@ function SimpleBuildingsTwin({ session }) {
               </div>
             )}
           </Popover>
+        )}
+
+        {importOpen && (
+          <ImportModal table={table} tables={base.tables} ctx={ctx}
+            onClose={() => setImportOpen(false)} onApply={applyImport} />
         )}
 
         {liveNote > 0 && <LiveNote key={liveNote} onDone={() => setLiveNote(0)} />}
@@ -2065,6 +2170,328 @@ function RecordModal({ table, fields, rows, recordId, gv, onClose, onNavigate, o
 }
 
 /* ------------------------------------------------------------------ */
+/*  Import och export                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Värde som det ska stå i filen. Tal skickas som tal så att Excel
+   räknar med dem i stället för att se dem som text. */
+function exportValue(field, v, ctx) {
+  if (v === null || v === undefined || v === "") return "";
+  if (["number", "currency", "rating"].includes(field.type)) return typeof v === "number" ? v : "";
+  if (isComputed(field) && typeof v === "number") return v;
+  if (field.type === "checkbox") return v ? "Ja" : "Nej";
+  return cellText(field, v, ctx);
+}
+
+function sheetFromRecords(tbl, flds, recs, ctx) {
+  const head = flds.map((f) => f.name);
+  const body = recs.map((r) => flds.map((f) => exportValue(f, getValue(ctx, tbl, r, f), ctx)));
+  return [head, ...body];
+}
+
+const stamp = () => new Date().toISOString().slice(0, 10);
+const fileSafe = (s) => String(s).replace(/[^\wåäöÅÄÖ -]+/g, "").trim().replace(/\s+/g, "-") || "export";
+
+function ImportModal({ table, tables, ctx, onClose, onApply }) {
+  const [file, setFile] = useState(null);
+  const [rows, setRows] = useState(null);
+  const [sheetNames, setSheetNames] = useState(null);
+  const [sheet, setSheet] = useState(null);
+  const [headerIndex, setHeaderIndex] = useState(0);
+  const [mapping, setMapping] = useState([]);
+  const [mode, setMode] = useState("append");
+  const [keyColumn, setKeyColumn] = useState(0);
+  const [allowNewOptions, setAllowNewOptions] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [drag, setDrag] = useState(false);
+  const inputRef = useRef(null);
+
+  const fields = table.fields;
+  const writable = fields.filter((f) => !isComputed(f));
+
+  const header = rows ? rows[headerIndex] || [] : [];
+  const body = rows ? rows.slice(headerIndex + 1) : [];
+
+  // Slår upp en post i en annan tabell på dess primärfält.
+  const findRecordId = useCallback((tid, name) => {
+    const t = tables.find((x) => x.id === tid);
+    if (!t) return null;
+    const key = String(name).trim().toLowerCase();
+    const hit = t.records.find((r) => String(recordTitle(ctx, tid, r.id)).trim().toLowerCase() === key);
+    return hit ? hit.id : null;
+  }, [tables, ctx]);
+
+  const openFile = async (f) => {
+    if (!f) return;
+    setBusy(true); setErr(null);
+    try {
+      const res = await io.readTable(f);
+      if (!res.rows.length) throw new Error("Filen ser tom ut.");
+      setFile(f); setRows(res.rows); setSheetNames(res.sheetNames); setSheet(res.sheet);
+      setHeaderIndex(0);
+      autoMap(res.rows[0] || [], res.rows.slice(1));
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const pickSheet = async (name) => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await io.readTable(file, name);
+      setRows(res.rows); setSheet(res.sheet); setHeaderIndex(0);
+      autoMap(res.rows[0] || [], res.rows.slice(1));
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const autoMap = (head, data) => {
+    setMapping(head.map((h, i) => {
+      const f = io.guessField(h, writable);
+      return {
+        target: f ? f.id : "__skip",
+        newType: io.guessType(data.slice(0, 80).map((r) => r[i])),
+        newName: String(h || "Kolumn " + (i + 1)).trim(),
+      };
+    }));
+  };
+
+  const changeHeader = (idx) => {
+    setHeaderIndex(idx);
+    autoMap(rows[idx] || [], rows.slice(idx + 1));
+  };
+
+  /* Räknar ut vad som händer, både för förhandsvisningen och importen. */
+  const plan = useMemo(() => {
+    if (!rows) return null;
+    const used = mapping.map((m, i) => ({ ...m, col: i })).filter((m) => m.target !== "__skip");
+    const newFieldDefs = used.filter((m) => m.target === "__new").map((m) => ({
+      id: uid("f"), name: m.newName || "Nytt fält", type: m.newType, width: 170,
+      options: ["select", "multiSelect"].includes(m.newType) ? [] : undefined,
+      col: m.col,
+    }));
+    const fieldFor = (m) => (m.target === "__new" ? newFieldDefs.find((d) => d.col === m.col) : fields.find((f) => f.id === m.target));
+
+    // Första passet: samla alternativ som saknas.
+    const optionNames = {};
+    const unmatched = new Set();
+    const parsed = body.map((row) => {
+      const cells = {};
+      used.forEach((m) => {
+        const f = fieldFor(m);
+        if (!f || isComputed(f)) return;
+        const r = io.coerce(row[m.col], f, { findRecordId, allowNewOptions });
+        r.newOptions.forEach((n) => {
+          optionNames[f.id] = optionNames[f.id] || [];
+          if (!optionNames[f.id].some((x) => x.toLowerCase() === n.toLowerCase())) optionNames[f.id].push(n);
+        });
+        r.unmatched.forEach((n) => unmatched.add(n));
+        cells[f.id] = r.value;
+      });
+      return cells;
+    });
+
+    // Andra passet: ge de nya alternativen riktiga id:n.
+    const optionAdds = {};
+    Object.keys(optionNames).forEach((fid) => {
+      const existing = (fields.find((f) => f.id === fid) || newFieldDefs.find((f) => f.id === fid))?.options || [];
+      optionAdds[fid] = optionNames[fid].map((n, i) =>
+        opt(n, COLORS[(existing.length + i) % COLORS.length].id));
+    });
+    const resolve = (fid, v) => {
+      if (v && v.__newOption) return (optionAdds[fid] || []).find((o) => o.name === v.__newOption)?.id ?? null;
+      if (Array.isArray(v)) return v.map((x) => (x && x.__newOption ? (optionAdds[fid] || []).find((o) => o.name === x.__newOption)?.id : x)).filter(Boolean);
+      return v;
+    };
+    parsed.forEach((cells) => Object.keys(cells).forEach((fid) => { cells[fid] = resolve(fid, cells[fid]); }));
+
+    // Koppla ihop med befintliga poster när vi uppdaterar.
+    const keyMap = used.find((m) => m.col === keyColumn);
+    const keyField = keyMap ? fieldFor(keyMap) : null;
+    let created = 0, updated = 0;
+    const records = parsed.map((cells, i) => {
+      if (mode === "update" && keyField) {
+        const want = String(body[i][keyColumn] ?? "").trim().toLowerCase();
+        const hit = want && table.records.find((r) => cellText(keyField, r.cells[keyField.id], ctx).trim().toLowerCase() === want);
+        if (hit) { updated++; return { id: hit.id, cells, isNew: false }; }
+      }
+      created++;
+      return { id: uid("rec"), cells, isNew: true };
+    });
+
+    const touchedLinkFields = used.map(fieldFor).filter((f) => f && f.type === "link").map((f) => f.id);
+    return {
+      newFields: newFieldDefs.map(({ col, ...f }) => f),
+      optionAdds, records, mode, touchedLinkFields,
+      stats: { created, updated, columns: used.length, skipped: mapping.length - used.length, unmatched: [...unmatched] },
+    };
+  }, [rows, mapping, mode, keyColumn, allowNewOptions, headerIndex, fields, table.records, findRecordId, ctx, body]);
+
+  const previewFields = plan
+    ? mapping.map((m, i) => (m.target === "__skip" ? null : m.target === "__new"
+        ? plan.newFields.find((f) => f.name === (m.newName || "Nytt fält"))
+        : fields.find((f) => f.id === m.target))).filter(Boolean)
+    : [];
+
+  return (
+    <div className="sb-modal-back" onMouseDown={onClose}>
+      <div className="sb-modal sb-import" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="sb-modal-head">
+          <div className="sb-modal-nav"><Upload size={15} /><span className="sb-modal-crumb">Importera till {table.name}</span></div>
+          <div className="sb-modal-actions"><button onClick={onClose}><X size={17} /></button></div>
+        </div>
+
+        {!rows ? (
+          <div className="sb-import-body">
+            <div className={"sb-drop" + (drag ? " over" : "")}
+              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => { e.preventDefault(); setDrag(false); openFile(e.dataTransfer.files[0]); }}
+              onClick={() => inputRef.current?.click()}>
+              <FileSpreadsheet size={30} />
+              <div className="sb-drop-t">{busy ? "Läser filen…" : "Släpp en fil här eller klicka för att välja"}</div>
+              <div className="sb-drop-s">CSV, XLSX eller XLS. Första raden ska vara rubriker.</div>
+            </div>
+            <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls,.xlsm,text/csv" style={{ display: "none" }}
+              onChange={(e) => openFile(e.target.files[0])} />
+            {err && <div className="sb-err">{err}</div>}
+            <div className="sb-pop-note">
+              Tips: exportera tabellen först via Data → Ladda ner tom mall. Då stämmer rubrikerna exakt och kolumnerna kopplas automatiskt.
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="sb-import-body">
+              <div className="sb-import-file">
+                <FileSpreadsheet size={15} />
+                <strong>{file?.name}</strong>
+                <span>{body.length} rader</span>
+                {sheetNames && sheetNames.length > 1 && (
+                  <select className="sb-mini" value={sheet} onChange={(e) => pickSheet(e.target.value)}>
+                    {sheetNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                )}
+                <button className="sb-linkbtn" onClick={() => { setRows(null); setFile(null); setErr(null); }}>Byt fil</button>
+              </div>
+
+              {rows.length > 1 && (
+                <div className="sb-import-opt">
+                  <label>Rubrikrad</label>
+                  <select className="sb-mini" value={headerIndex} onChange={(e) => changeHeader(Number(e.target.value))}>
+                    {rows.slice(0, 6).map((r, i) => (
+                      <option key={i} value={i}>Rad {i + 1}: {r.slice(0, 4).join(" | ").slice(0, 52)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="sb-pop-label">Koppla kolumner</div>
+              <div className="sb-maplist">
+                {mapping.map((m, i) => (
+                  <div key={i} className={"sb-maprow" + (m.target === "__skip" ? " off" : "")}>
+                    <div className="sb-mapsrc">
+                      <div className="sb-mapname">{header[i] || <em>kolumn {i + 1}</em>}</div>
+                      <div className="sb-mapex">{body.slice(0, 2).map((r) => r[i]).filter(Boolean).join(" · ").slice(0, 46) || "—"}</div>
+                    </div>
+                    <ChevronRight size={14} className="sb-mapchev" />
+                    <select className="sb-mini grow" value={m.target}
+                      onChange={(e) => setMapping(mapping.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))}>
+                      <option value="__skip">— hoppa över —</option>
+                      <option value="__new">+ skapa nytt fält</option>
+                      {writable.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    </select>
+                    {m.target === "__new" && (
+                      <select className="sb-mini" value={m.newType}
+                        onChange={(e) => setMapping(mapping.map((x, j) => (j === i ? { ...x, newType: e.target.value } : x)))}>
+                        {FIELD_TYPES.filter((t) => !["formula", "rollup", "link"].includes(t.type))
+                          .map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
+                      </select>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="sb-pop-label">Hur ska raderna läggas in</div>
+              <div className="sb-import-opts">
+                <label className="sb-radio"><input type="radio" checked={mode === "append"} onChange={() => setMode("append")} />
+                  <span><strong>Lägg till</strong> alla rader som nya poster</span></label>
+                <label className="sb-radio"><input type="radio" checked={mode === "update"} onChange={() => setMode("update")} />
+                  <span><strong>Uppdatera</strong> poster som matchar, lägg till resten</span></label>
+                <label className="sb-radio"><input type="radio" checked={mode === "replace"} onChange={() => setMode("replace")} />
+                  <span><strong>Ersätt</strong> allt i tabellen med filens innehåll</span></label>
+              </div>
+
+              {mode === "update" && (
+                <div className="sb-import-opt">
+                  <label>Matcha på kolumn</label>
+                  <select className="sb-mini grow" value={keyColumn} onChange={(e) => setKeyColumn(Number(e.target.value))}>
+                    {header.map((h, i) => <option key={i} value={i}>{h || "kolumn " + (i + 1)}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <label className="sb-radio"><input type="checkbox" checked={allowNewOptions} onChange={(e) => setAllowNewOptions(e.target.checked)} />
+                <span>Skapa alternativ som saknas i enkelval och flerval</span></label>
+
+              {plan && previewFields.length > 0 && (
+                <>
+                  <div className="sb-pop-label">Förhandsvisning</div>
+                  <div className="sb-preview">
+                    <table>
+                      <thead><tr>{previewFields.map((f) => <th key={f.id}>{f.name}</th>)}</tr></thead>
+                      <tbody>
+                        {plan.records.slice(0, 4).map((r, i) => (
+                          <tr key={i}>
+                            {previewFields.map((f) => {
+                              const withOpts = plan.optionAdds[f.id] ? { ...f, options: [...(f.options || []), ...plan.optionAdds[f.id]] } : f;
+                              return <td key={f.id}>{cellText(withOpts, r.cells[f.id], ctx) || <span className="sb-mempty">—</span>}</td>;
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {plan && plan.stats.unmatched.length > 0 && (
+                <div className="sb-warn">
+                  <TriangleAlert size={14} />
+                  <div>
+                    {plan.stats.unmatched.length} namn i länkkolumnerna hittades inte och lämnas tomma:{" "}
+                    {plan.stats.unmatched.slice(0, 6).join(", ")}{plan.stats.unmatched.length > 6 ? " …" : ""}.
+                    Importera den tabellen först om de ska kopplas.
+                  </div>
+                </div>
+              )}
+              {mode === "replace" && (
+                <div className="sb-warn danger">
+                  <TriangleAlert size={14} />
+                  <div>Alla {table.records.length} befintliga poster i {table.name} tas bort. Det går inte att ångra.</div>
+                </div>
+              )}
+              {err && <div className="sb-err">{err}</div>}
+            </div>
+
+            <div className="sb-import-foot">
+              <span className="sb-import-stats">
+                {plan && (mode === "replace"
+                  ? `${plan.records.length} poster ersätter innehållet`
+                  : `${plan.stats.created} nya${plan.stats.updated ? `, ${plan.stats.updated} uppdateras` : ""}`)}
+                {plan && plan.stats.skipped > 0 && ` · ${plan.stats.skipped} kolumner hoppas över`}
+              </span>
+              <button className="sb-btn ghost" onClick={onClose}>Avbryt</button>
+              <button className="sb-btn primary" disabled={!plan || !plan.records.length || plan.stats.columns === 0}
+                onClick={() => onApply(plan)}>Importera</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Stil – Simple Buildings                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2359,6 +2786,35 @@ const CSS = `
 .sb-userbtn { display: flex; align-items: center; padding: 0; border-radius: 50%; }
 .sb-userbtn:hover { box-shadow: 0 0 0 2px var(--acc-l); }
 .sb-save.local { background: #fff5dc; color: #9a6b06; font-weight: 600; }
+
+.sb-import { max-width: 860px; }
+.sb-import-body { flex: 1; overflow-y: auto; padding: 4px 22px 20px; }
+.sb-import-foot { display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-top: 1px solid var(--b); }
+.sb-import-stats { flex: 1; color: var(--muted); }
+.sb-drop { margin-top: 14px; border: 2px dashed var(--b2); border-radius: 10px; padding: 40px 20px; text-align: center; color: var(--muted); cursor: pointer; }
+.sb-drop:hover, .sb-drop.over { border-color: var(--acc); background: var(--acc-l); color: var(--acc-d); }
+.sb-drop-t { margin-top: 10px; font-weight: 600; color: var(--ink); }
+.sb-drop-s { margin-top: 4px; font-size: 12px; }
+.sb-import-file { display: flex; align-items: center; gap: 10px; padding: 10px 0 4px; }
+.sb-import-file span { color: var(--muted); }
+.sb-import-opt { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.sb-import-opt label { color: var(--muted); min-width: 120px; }
+.sb-import-opts { display: flex; flex-direction: column; gap: 6px; }
+.sb-radio { display: flex; align-items: center; gap: 9px; padding: 5px 0; cursor: pointer; }
+.sb-radio input { accent-color: var(--acc); width: 15px; height: 15px; }
+.sb-maplist { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; padding: 2px; }
+.sb-maprow { display: flex; align-items: center; gap: 8px; }
+.sb-maprow.off { opacity: .5; }
+.sb-mapsrc { width: 210px; flex: none; overflow: hidden; }
+.sb-mapname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-mapex { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-mapchev { color: var(--muted); flex: none; }
+.sb-preview { border: 1px solid var(--b); border-radius: 7px; overflow: auto; max-height: 190px; }
+.sb-preview table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.sb-preview th { text-align: left; font-weight: 620; background: #f5f8f8; padding: 7px 10px; border-bottom: 1px solid var(--b); position: sticky; top: 0; white-space: nowrap; }
+.sb-preview td { padding: 6px 10px; border-bottom: 1px solid #eef1f1; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-warn { display: flex; gap: 9px; align-items: flex-start; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #fff5dc; color: #7d5602; line-height: 1.5; }
+.sb-warn.danger { background: #ffdce5; color: #932018; }
 
 .sb-livenote {
   position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 95;
